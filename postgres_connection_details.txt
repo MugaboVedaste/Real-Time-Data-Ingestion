@@ -1,0 +1,18 @@
+PostgreSQL Connection Details
+=============================
+
+Host:      localhost
+Port:      5432
+Database:  ecommerce_streaming
+Table:     user_events
+User:      postgres
+Password:  <your_postgres_password>
+
+Notes
+-----
+- The real password is stored only in the local .env file, which is excluded
+  from Git (see .gitignore). Replace the placeholder above with your own
+  PostgreSQL password; share the real one privately if a reviewer needs it.
+- The pipeline reads these values from .env (see .env.example):
+  POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD.
+- Connect with:  psql -h localhost -p 5432 -U postgres -d ecommerce_streaming

@@ -10,10 +10,10 @@ The pipeline:
 - Generates simulated e-commerce events continuously.
 - Writes events into timestamped CSV files.
 - Reads incoming files incrementally using Spark Structured Streaming.
-- Validates and filters incoming records.
+- Validates and filters incoming records, counting the rejected ones.
 - Inserts valid records into PostgreSQL.
 - Prevents duplicate event IDs.
-- Tracks batch processing performance.
+- Tracks batch processing performance and end-to-end latency.
 
 ## 2. System Architecture
 
@@ -54,17 +54,23 @@ Real-Time-Data-Ingestion/
 │
 ├── reports/
 │   ├── performance_metrics.md
-│   └── streaming_metrics.csv
+│   ├── streaming_metrics.csv
+│   ├── metrics_baseline_run.csv
+│   └── metrics_load_run.csv
 │
 ├── scripts/
 │   ├── data_generator.py
-│   └── spark_streaming_to_postgres.py
+│   ├── spark_streaming_to_postgres.py
+│   ├── measure_performance.py
+│   └── run_pipeline.py
 │
 ├── sql/
 │   └── postgres_setup.sql
 │
 ├── tests/
-│   └── test_pipeline.py
+│   ├── test_pipeline.py
+│   ├── test_generator.py
+│   └── test_transformations.py
 │
 ├── data/
 │   └── incoming/
@@ -72,7 +78,9 @@ Real-Time-Data-Ingestion/
 ├── checkpoint/
 │
 ├── .env
+├── .env.example
 ├── .gitignore
+├── postgres_connection_details.txt
 ├── requirements.txt
 └── README.md
 ```
@@ -87,7 +95,7 @@ Before running the project, ensure you have:
 - PostgreSQL
 - Git
 
-**Windows configuration:** The current Spark script uses Hadoop utilities located at `D:\hadoop`. Ensure `winutils.exe` exists at `D:\hadoop\bin\winutils.exe`, or adjust the Hadoop configuration in the Spark script to match your environment.
+**Windows configuration:** Spark on Windows needs `winutils.exe`. By default the script looks for it at `D:\hadoop\bin\winutils.exe`. If yours is elsewhere, set `HADOOP_HOME` (the folder that contains `bin\winutils.exe`) in `.env` or your shell. On other operating systems this is ignored.
 
 ## 6. Installation and Setup
 
@@ -126,11 +134,11 @@ python -m pip install -r requirements.txt
 
 Create the database:
 
-```sql
-CREATE DATABASE ecommerce_streaming;
+```bash
+psql -U postgres -c "CREATE DATABASE ecommerce_streaming;"
 ```
 
-Connect to the database and create the events table by executing:
+Then create the events table, with its constraints and indexes:
 
 ```bash
 psql -U postgres -d ecommerce_streaming -f sql/postgres_setup.sql
@@ -143,16 +151,19 @@ CREATE TABLE IF NOT EXISTS user_events (
     event_id BIGINT PRIMARY KEY,
     user_id BIGINT NOT NULL,
     product_id BIGINT NOT NULL,
-    event_type VARCHAR(20) NOT NULL,
-    price NUMERIC(10, 2) NOT NULL,
+    event_type VARCHAR(20) NOT NULL
+        CHECK (event_type IN ('view', 'add_to_cart', 'purchase')),
+    price NUMERIC(10, 2) NOT NULL CHECK (price > 0),
     event_time TIMESTAMP NOT NULL,
     ingestion_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
+The script also creates indexes on `event_time` and `event_type`.
+
 ### Step 5: Configure Environment Variables
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` in the project root and edit it:
 
 ```env
 POSTGRES_HOST=localhost
@@ -164,13 +175,42 @@ POSTGRES_PASSWORD=your_postgres_password
 
 Replace the example password with your actual PostgreSQL password.
 
-**Important:** Never commit your `.env` file or expose database credentials.
+Optional settings (see `.env.example`): `HADOOP_HOME`, `MAX_FILES_PER_TRIGGER` (default 10) and `TRIGGER_INTERVAL` (default `5 seconds`).
+
+**Important:** Never commit your `.env` file or expose database credentials. `postgres_connection_details.txt` contains placeholders only.
 
 ## 7. Running the Pipeline
 
-The pipeline uses two separate processes: the data generator and the Spark streaming application.
+The pipeline uses two separate processes: the data generator and the Spark streaming application. You can start them together with one command (Option A) or run each yourself in its own terminal (Option B).
 
-### Terminal 1: Start the Spark Application
+### Option A: Run everything with one command
+
+From the project root, with the virtual environment active:
+
+```bash
+python scripts/run_pipeline.py
+```
+
+`run_pipeline.py` is a thin launcher. It starts `spark_streaming_to_postgres.py`, waits until Spark is ready, starts `data_generator.py`, and on `CTRL+C` stops both and prints a performance summary for that session (using `measure_performance.py`). It does not replace the individual scripts, which still work on their own.
+
+Options:
+
+| Flag | Meaning |
+|---|---|
+| `--events N` | Events per CSV file (default 10) |
+| `--interval SECONDS` | Seconds between files (default 5) |
+| `--files N` | Generate N files, let Spark finish, then exit (default: run until `CTRL+C`) |
+| `--no-measure` | Skip the performance summary at the end |
+
+Example, a heavier load test that stops by itself:
+
+```bash
+python scripts/run_pipeline.py --events 500 --interval 1 --files 40
+```
+
+### Option B: Run each script manually
+
+#### Terminal 1: Start the Spark Application
 
 From the project root:
 
@@ -186,7 +226,7 @@ Waiting for incoming events...
 Spark UI: http://localhost:4040
 ```
 
-### Terminal 2: Start the Data Generator
+#### Terminal 2: Start the Data Generator
 
 Open another terminal, activate the virtual environment, navigate to the project root, and run:
 
@@ -194,7 +234,13 @@ Open another terminal, activate the virtual environment, navigate to the project
 python scripts/data_generator.py
 ```
 
-The generator continuously creates CSV files containing 10 simulated e-commerce events every 5 seconds.
+The generator continuously creates CSV files containing 10 simulated e-commerce events every 5 seconds. Files are written to a hidden temporary name and then renamed, so Spark never reads a half-written file.
+
+Optional flags: `--events N` (events per file), `--interval SECONDS` and `--files N` (stop after N files). For a heavier load test:
+
+```bash
+python scripts/data_generator.py --events 500 --interval 1 --files 40
+```
 
 Spark detects and processes incoming files incrementally.
 
@@ -211,9 +257,9 @@ Incoming records are validated to ensure:
 - Event ID, user ID, and product ID are present.
 - Event type is supported.
 - Price is greater than zero.
-- Event timestamp is valid.
+- Event timestamp is valid (a malformed timestamp becomes NULL and the row is rejected instead of crashing the job).
 
-Duplicate event IDs are prevented using PostgreSQL's primary key and:
+The number of rejected records is printed for each batch and stored in the metrics file. Duplicate event IDs are prevented using PostgreSQL's primary key and:
 
 ```sql
 ON CONFLICT (event_id) DO NOTHING
@@ -241,7 +287,14 @@ The metrics include:
 - Batch ID
 - Number of processed records
 - Number of inserted records
+- Number of rejected records
 - Batch processing duration
+
+To summarise throughput, batch times and end-to-end latency (`ingestion_time - event_time`):
+
+```bash
+python scripts/measure_performance.py
+```
 
 A performance summary is available in:
 
@@ -301,20 +354,17 @@ python -m pytest tests/ -v
 
 The automated tests validate:
 
-1. PostgreSQL database connectivity.
-2. Existence of event records.
-3. Duplicate event prevention.
-4. Valid event types.
-5. Positive event prices.
-6. Required fields are not NULL.
+1. PostgreSQL connectivity, event records, duplicate prevention, valid event types, positive prices and required fields (`test_pipeline.py`, needs PostgreSQL with data).
+2. CSV generation: header, row count, valid values, unique IDs, no leftover temp files (`test_generator.py`).
+3. The Spark cleaning logic against valid and deliberately invalid rows (`test_transformations.py`, needs Java and PySpark only).
 
 See [Test Cases](docs/test_cases.md) for more details.
 
 ## 12. Stopping the Applications
 
-Press `CTRL+C` in the data generator terminal.
+If you used `run_pipeline.py`, press `CTRL+C` once in its terminal. It stops both processes and prints the performance summary.
 
-Press `CTRL+C` in the Spark application terminal.
+If you started the scripts manually, press `CTRL+C` in the data generator terminal, then in the Spark application terminal.
 
 ## 13. Project Documentation
 
@@ -326,6 +376,7 @@ Additional documentation is available in the `docs/` and `reports/` directories:
 - [User Guide](docs/user_guide.md)
 - [Test Cases](docs/test_cases.md)
 - [Performance Metrics](reports/performance_metrics.md)
+- [Connection Details](postgres_connection_details.txt)
 
 ## 14. Limitations
 

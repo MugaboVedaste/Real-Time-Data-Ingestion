@@ -8,9 +8,9 @@ This guide explains how to install, configure, and run the Real-Time Data Ingest
 
 Before running the project, ensure you have installed:
 
-- Python 3.11 or compatible version
-- Java Development Kit (JDK)
-- Apache Spark / PySpark
+- Python 3.10 or later
+- Java 17 or later
+- Apache Spark (installed through the PySpark dependency)
 - PostgreSQL
 - Git
 - Hadoop Windows utilities (`winutils.exe`) when running Spark on Windows
@@ -54,9 +54,20 @@ Note: Use the Python environment configured for PySpark if your installation use
 ## 5. Database Configuration
 
 1. Start PostgreSQL.
-2. Create a database named `ecommerce_streaming`.
-3. Execute the SQL script in the project's `sql/` directory to create the required table.
-4. Configure the database connection variables in the `.env` file.
+2. Create a database named `ecommerce_streaming`:
+
+   ```bash
+   psql -U postgres -c "CREATE DATABASE ecommerce_streaming;"
+   ```
+
+3. Create the table (and its constraints and indexes):
+
+   ```bash
+   psql -U postgres -d ecommerce_streaming -f sql/postgres_setup.sql
+   ```
+
+4. Copy `.env.example` to `.env` and fill in the connection variables
+   (see also `postgres_connection_details.txt`).
 
 Example configuration:
 
@@ -72,37 +83,41 @@ Do not commit your actual `.env` file or database password to GitHub.
 
 ## 6. Hadoop Configuration on Windows
 
-Ensure `winutils.exe` is available at:
+Ensure `winutils.exe` is available. By default the script looks in:
 
 ```text
 D:\hadoop\bin\winutils.exe
 ```
 
-The Python streaming script configures the Hadoop environment variables before creating the Spark session.
+If it is somewhere else, set `HADOOP_HOME` (the folder that contains `bin\winutils.exe`) in `.env` or your shell. The script only applies this on Windows.
 
 ## 7. Running the Pipeline
 
-### Terminal 1: Start the Event Generator
+### Terminal 1: Start Spark Streaming
 
-Run the event generator script:
-
-```bash
-python scripts/data_generator.py
-```
-
-The generator continuously creates simulated e-commerce events and saves them as CSV files in `data/incoming/`.
-
-### Terminal 2: Start Spark Streaming
-
-Activate the configured Python environment and navigate to the project directory.
-
-Run:
+Activate the configured Python environment, navigate to the project directory and run:
 
 ```bash
 python scripts/spark_streaming_to_postgres.py
 ```
 
-Spark will monitor the incoming directory and process new CSV files.
+Wait for `Waiting for incoming events...`. Spark monitors the incoming directory and processes new CSV files.
+
+### Terminal 2: Start the Event Generator
+
+In a second terminal (same environment, project root) run:
+
+```bash
+python scripts/data_generator.py
+```
+
+The generator creates 10 simulated e-commerce events every 5 seconds and saves them as CSV files in `data/incoming/`.
+
+Optional flags: `--events N` (events per file), `--interval SECONDS` (pause between files) and `--files N` (stop after N files). For example, a heavier load test:
+
+```bash
+python scripts/data_generator.py --events 500 --interval 1 --files 40
+```
 
 ## 8. Monitoring
 
@@ -120,6 +135,14 @@ Performance metrics are recorded in:
 reports/streaming_metrics.csv
 ```
 
+Each row has the batch ID, records processed, records inserted, records rejected as invalid and the batch duration. A log line is also printed for every batch, and a separate line when records are rejected.
+
+To summarise throughput and latency:
+
+```bash
+python scripts/measure_performance.py
+```
+
 ## 9. Verifying Database Records
 
 Connect to PostgreSQL and execute:
@@ -135,12 +158,20 @@ LIMIT 10;
 
 These queries help verify that events are being inserted successfully.
 
-## 10. Stopping the Pipeline
+## 10. Running the Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+The database tests need PostgreSQL running with the table populated. The generator and transformation tests need only Java and PySpark. See `docs/test_cases.md`.
+
+## 11. Stopping the Pipeline
 
 - Press `Ctrl + C` in the Spark terminal to stop Spark.
 - Press `Ctrl + C` in the event generator terminal to stop event generation.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Hadoop Configuration Error
 
@@ -160,10 +191,14 @@ Check that PostgreSQL is running and that the `.env` database settings are corre
 
 Ensure the event generator is running and creating CSV files in `data/incoming/`.
 
+### Records Are Rejected
+
+Rejected records are invalid rows (missing fields, unsupported event type, price of zero or less, malformed timestamp). The Spark log shows `rejected N invalid record(s)` for the batch. Inspect the CSV file to find them.
+
 ### Spark Does Not Start
 
 Verify the Python environment, PySpark installation, Java configuration, and project working directory.
 
-## 12. Conclusion
+## 13. Conclusion
 
 Following these instructions allows developers to configure, run, monitor, and verify the Real-Time Data Ingestion Pipeline.

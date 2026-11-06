@@ -29,7 +29,7 @@ The main objectives are:
 | Apache Spark | Distributed data processing |
 | Spark Structured Streaming | Continuous micro-batch processing |
 | PostgreSQL | Persistent data storage |
-| Pandas / CSV | Data inspection and metrics reporting |
+| CSV | Event files and metrics reporting |
 | psycopg2 | PostgreSQL connectivity |
 | python-dotenv | Environment configuration |
 | Git and GitHub | Version control |
@@ -42,7 +42,7 @@ The main objectives are:
 4. **Database Integration:** Inserts processed events into PostgreSQL.
 5. **Duplicate Prevention:** Uses event IDs and PostgreSQL conflict handling to avoid duplicate records.
 6. **Checkpointing:** Maintains streaming progress to support recovery.
-7. **Performance Monitoring:** Records batch processing statistics in a CSV report.
+7. **Performance Monitoring:** Records batch processing statistics (including rejected-record counts) in a CSV report, and `scripts/measure_performance.py` computes throughput and end-to-end latency.
 
 ## 5. Data Flow
 

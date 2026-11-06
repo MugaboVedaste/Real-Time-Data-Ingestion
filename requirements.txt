@@ -1,0 +1,11 @@
+# Spark processing
+pyspark==4.0.1
+
+# PostgreSQL database connection
+psycopg2-binary==2.9.13
+
+# Environment variable management
+python-dotenv==1.2.4
+
+# Testing
+pytest==9.2.0

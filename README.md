@@ -102,11 +102,9 @@ Before running the project, ensure you have:
 ### Step 1: Clone the Repository
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone https://github.com/MugaboVedaste/Real-Time-Data-Ingestion.git
 cd Real-Time-Data-Ingestion
 ```
-
-Replace the placeholder with your actual GitHub repository URL.
 
 ### Step 2: Create a Virtual Environment
 
@@ -395,6 +393,8 @@ Additional documentation is available in the `docs/` and `reports/` directories:
 
 ---
 
+**Author:** [MugaboVedaste](https://github.com/MugaboVedaste)  
+**Repository:** https://github.com/MugaboVedaste/Real-Time-Data-Ingestion  
 **Project:** Real-Time E-Commerce Data Ingestion Pipeline  
 **Processing Engine:** Apache Spark Structured Streaming  
 **Database:** PostgreSQL

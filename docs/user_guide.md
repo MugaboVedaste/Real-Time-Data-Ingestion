@@ -20,7 +20,7 @@ Before running the project, ensure you have installed:
 Clone the repository:
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone https://github.com/MugaboVedaste/Real-Time-Data-Ingestion.git
 ```
 
 Navigate into the project:
@@ -93,7 +93,38 @@ If it is somewhere else, set `HADOOP_HOME` (the folder that contains `bin\winuti
 
 ## 7. Running the Pipeline
 
-### Terminal 1: Start Spark Streaming
+You can start everything with one command (Option A) or run each script yourself (Option B).
+
+### Option A: Run Everything With One Command
+
+Activate the Python environment, go to the project root and run:
+
+```bash
+python scripts/run_pipeline.py
+```
+
+This starts Spark, waits until it is ready, then starts the event generator. Press `Ctrl + C` once to stop both; a performance summary for the session is then printed.
+
+Options:
+
+| Flag | Meaning |
+|---|---|
+| `--events N` | Events per CSV file (default 10) |
+| `--interval SECONDS` | Seconds between files (default 5) |
+| `--files N` | Generate N files, let Spark finish, then exit (default: run until `Ctrl + C`) |
+| `--no-measure` | Skip the performance summary |
+
+Example (a heavier test that stops by itself):
+
+```bash
+python scripts/run_pipeline.py --events 500 --interval 1 --files 40
+```
+
+The launcher only starts the existing scripts, so Option B still works exactly as before.
+
+### Option B: Run Each Script Manually
+
+#### Terminal 1: Start Spark Streaming
 
 Activate the configured Python environment, navigate to the project directory and run:
 
@@ -103,7 +134,7 @@ python scripts/spark_streaming_to_postgres.py
 
 Wait for `Waiting for incoming events...`. Spark monitors the incoming directory and processes new CSV files.
 
-### Terminal 2: Start the Event Generator
+#### Terminal 2: Start the Event Generator
 
 In a second terminal (same environment, project root) run:
 
@@ -168,8 +199,8 @@ The database tests need PostgreSQL running with the table populated. The generat
 
 ## 11. Stopping the Pipeline
 
-- Press `Ctrl + C` in the Spark terminal to stop Spark.
-- Press `Ctrl + C` in the event generator terminal to stop event generation.
+- If you used `run_pipeline.py`, press `Ctrl + C` once in its terminal. It stops both processes.
+- If you started the scripts manually, press `Ctrl + C` in the event generator terminal, then in the Spark terminal.
 
 ## 12. Troubleshooting
 

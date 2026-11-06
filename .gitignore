@@ -1,0 +1,6 @@
+.env
+.venv/
+.pyspark-env/
+__pycache__/
+data/incoming/*.csv
+checkpoint/

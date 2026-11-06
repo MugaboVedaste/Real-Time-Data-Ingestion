@@ -1,8 +1,12 @@
 
 import os
+import csv
+import time
 from pathlib import Path
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, to_timestamp
 from pyspark.sql.types import (
@@ -14,7 +18,8 @@ from pyspark.sql.types import (
     DoubleType,
 )
 
-
+os.environ["HADOOP_HOME"] = r"D:\hadoop"
+os.environ["hadoop.home.dir"] = r"D:\hadoop"
 # --------------------------------------------------
 # 1. Project configuration
 # --------------------------------------------------
@@ -25,7 +30,17 @@ load_dotenv(PROJECT_DIR / ".env")
 
 INPUT_DIR = PROJECT_DIR / "data" / "incoming"
 CHECKPOINT_DIR = PROJECT_DIR / "checkpoint"
+REPORTS_DIR = PROJECT_DIR / "reports"
 
+# Create required directories
+INPUT_DIR.mkdir(parents=True, exist_ok=True)
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Streaming metrics output
+METRICS_FILE = REPORTS_DIR / "streaming_metrics.csv"
+
+# PostgreSQL configuration
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "ecommerce_streaming")
@@ -98,93 +113,168 @@ processed_df = (
 
 
 # --------------------------------------------------
-# 6. Write each micro-batch to PostgreSQL
+# 6. Write each micro-batch to PostgreSQL with metrics
 # --------------------------------------------------
 
 def write_to_postgres(batch_df, batch_id):
 
-    if batch_df.isEmpty():
-        print(f"Batch {batch_id}: No valid events.")
-        return
-
-    rows = batch_df.select(
-        "event_id",
-        "user_id",
-        "product_id",
-        "event_type",
-        "price",
-        "event_time",
-    ).collect()
+    start_time = time.perf_counter()
+    processed_count = 0
+    inserted_count = 0
 
     import psycopg2
     from psycopg2.extras import execute_values
 
-    connection = psycopg2.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        database=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD,
-    )
-
     try:
-        with connection:
-            with connection.cursor() as cursor:
+        if not batch_df.isEmpty():
 
-                insert_query = """
-                    INSERT INTO user_events (
-                        event_id,
-                        user_id,
-                        product_id,
-                        event_type,
-                        price,
-                        event_time
-                    )
-                    VALUES %s
-                    ON CONFLICT (event_id) DO NOTHING
-                """
+            rows = batch_df.select(
+                "event_id",
+                "user_id",
+                "product_id",
+                "event_type",
+                "price",
+                "event_time",
+            ).collect()
 
-                values = [
-                    (
-                        row["event_id"],
-                        row["user_id"],
-                        row["product_id"],
-                        row["event_type"],
-                        row["price"],
-                        row["event_time"],
-                    )
-                    for row in rows
-                ]
+            processed_count = len(rows)
 
-                execute_values(
-                    cursor,
-                    insert_query,
-                    values,
-                    page_size=1000,
+            if rows:
+
+                connection = psycopg2.connect(
+                    host=POSTGRES_HOST,
+                    port=POSTGRES_PORT,
+                    database=POSTGRES_DB,
+                    user=POSTGRES_USER,
+                    password=POSTGRES_PASSWORD,
                 )
 
+                try:
+                    with connection:
+                        with connection.cursor() as cursor:
+
+                            insert_query = """
+                                INSERT INTO user_events (
+                                    event_id,
+                                    user_id,
+                                    product_id,
+                                    event_type,
+                                    price,
+                                    event_time
+                                )
+                                VALUES %s
+                                ON CONFLICT (event_id) DO NOTHING
+                                RETURNING event_id
+                            """
+
+                            values = [
+                                (
+                                    row["event_id"],
+                                    row["user_id"],
+                                    row["product_id"],
+                                    row["event_type"],
+                                    row["price"],
+                                    row["event_time"],
+                                )
+                                for row in rows
+                            ]
+
+                            inserted_rows = execute_values(
+                                cursor,
+                                insert_query,
+                                values,
+                                page_size=1000,
+                                fetch=True,
+                            )
+
+                            inserted_count = len(inserted_rows)
+
+                finally:
+                    connection.close()
+
+        duration = round(time.perf_counter() - start_time, 3)
+
+        processing_timestamp = datetime.now(timezone.utc).isoformat()
+
+        # Save metrics to CSV
+        file_exists = METRICS_FILE.exists()
+
+        with open(
+            METRICS_FILE,
+            "a",
+            newline="",
+            encoding="utf-8"
+        ) as file:
+
+            writer = csv.writer(file)
+
+            if not file_exists:
+                writer.writerow([
+                    "processing_timestamp",
+                    "batch_id",
+                    "processed_records",
+                    "inserted_records",
+                    "duration_seconds",
+                ])
+
+            writer.writerow([
+                processing_timestamp,
+                batch_id,
+                processed_count,
+                inserted_count,
+                duration,
+            ])
+
+        # Display metrics
         print(
-            f"Batch {batch_id}: "
-            f"{len(rows)} events processed."
+            f"\nBatch {batch_id} Metrics | "
+            f"Processed: {processed_count} | "
+            f"Inserted: {inserted_count} | "
+            f"Duration: {duration}s",
+            flush=True
         )
 
-    finally:
-        connection.close()
+    except Exception as error:
+        print(f"Batch {batch_id} failed: {error}", flush=True)
+        raise
 
 
 # --------------------------------------------------
-# 7. Start streaming query
+# 7. Start Spark Structured Streaming
 # --------------------------------------------------
 
-query = (
-    processed_df.writeStream
-    .foreachBatch(write_to_postgres)
-    .option("checkpointLocation", str(CHECKPOINT_DIR))
-    .trigger(processingTime="5 seconds")
-    .start()
-)
+try:
 
-print("Spark Structured Streaming started.")
-print("Waiting for incoming CSV files...")
+    query = (
+        processed_df.writeStream
+        .foreachBatch(write_to_postgres)
+        .outputMode("append")
+        .option("checkpointLocation", str(CHECKPOINT_DIR))
+        .trigger(processingTime="5 seconds")
+        .start()
+    )
 
-query.awaitTermination()
+    print(
+        "\nSpark Structured Streaming started successfully!",
+        flush=True
+    )
+
+    print(
+        "Waiting for incoming events...",
+        flush=True
+    )
+
+    print(
+        f"Spark UI: http://localhost:{spark.sparkContext.uiWebUrl.split(':')[-1]}"
+        if spark.sparkContext.uiWebUrl
+        else "Spark UI is not available.",
+        flush=True
+    )
+
+    query.awaitTermination()
+
+except KeyboardInterrupt:
+    print("\nStreaming application interrupted by user.")
+
+finally:
+    spark.stop()
